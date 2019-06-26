@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"strings"
 
 	"github.com/golang/protobuf/jsonpb"
 	"github.com/golang/protobuf/proto"
@@ -52,31 +53,32 @@ func (h *AuthAPIHTTPConverter) SignUp(cb func(ctx context.Context, w http.Respon
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		body, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			cb(ctx, w, r, nil, nil, err)
-			return
-		}
-
 		arg := &SignUpRequest{}
-
 		contentType := r.Header.Get("Content-Type")
-		switch contentType {
-		case "application/protobuf", "application/x-protobuf":
-			if err := proto.Unmarshal(body, arg); err != nil {
+		if r.Method != http.MethodGet {
+			body, err := ioutil.ReadAll(r.Body)
+			if err != nil {
 				cb(ctx, w, r, nil, nil, err)
 				return
 			}
-		case "application/json":
-			if err := jsonpb.Unmarshal(bytes.NewBuffer(body), arg); err != nil {
+
+			switch contentType {
+			case "application/protobuf", "application/x-protobuf":
+				if err := proto.Unmarshal(body, arg); err != nil {
+					cb(ctx, w, r, nil, nil, err)
+					return
+				}
+			case "application/json":
+				if err := jsonpb.Unmarshal(bytes.NewBuffer(body), arg); err != nil {
+					cb(ctx, w, r, nil, nil, err)
+					return
+				}
+			default:
+				w.WriteHeader(http.StatusUnsupportedMediaType)
+				_, err := fmt.Fprintf(w, "Unsupported Content-Type: %s", contentType)
 				cb(ctx, w, r, nil, nil, err)
 				return
 			}
-		default:
-			w.WriteHeader(http.StatusUnsupportedMediaType)
-			_, err := fmt.Fprintf(w, "Unsupported Content-Type: %s", contentType)
-			cb(ctx, w, r, nil, nil, err)
-			return
 		}
 
 		ret, err := h.srv.SignUp(ctx, arg)
@@ -85,7 +87,17 @@ func (h *AuthAPIHTTPConverter) SignUp(cb func(ctx context.Context, w http.Respon
 			return
 		}
 
-		switch contentType {
+		accepts := strings.Split(r.Header.Get("Accept"), ",")
+		accept := accepts[0]
+		if accept == "*/*" || accept == "" {
+			if contentType != "" {
+				accept = contentType
+			} else {
+				accept = "application/json"
+			}
+		}
+
+		switch accept {
 		case "application/protobuf", "application/x-protobuf":
 			buf, err := proto.Marshal(ret)
 			if err != nil {
@@ -97,13 +109,17 @@ func (h *AuthAPIHTTPConverter) SignUp(cb func(ctx context.Context, w http.Respon
 				return
 			}
 		case "application/json":
-			if err := json.NewEncoder(w).Encode(ret); err != nil {
+			m := jsonpb.Marshaler{
+				EnumsAsInts:  true,
+				EmitDefaults: true,
+			}
+			if err := m.Marshal(w, ret); err != nil {
 				cb(ctx, w, r, arg, ret, err)
 				return
 			}
 		default:
 			w.WriteHeader(http.StatusUnsupportedMediaType)
-			_, err := fmt.Fprintf(w, "Unsupported Content-Type: %s", contentType)
+			_, err := fmt.Fprintf(w, "Unsupported Accept: %s", accept)
 			cb(ctx, w, r, arg, ret, err)
 			return
 		}
